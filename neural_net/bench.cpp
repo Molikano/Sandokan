@@ -112,14 +112,16 @@ BenchResult run_bench_single(Net& net, std::vector<LayerPtr*>& layers,
     std::vector<int> idx(n); std::iota(idx.begin(), idx.end(), 0);
     std::mt19937 rng(42);
 
+    Eigen::VectorXf x(data.image_size());
     auto run_epoch = [&]() {
         std::shuffle(idx.begin(), idx.end(), rng);
         for (int s = 0; s < n; s += batch_size) {
             int e = std::min(s + batch_size, n), bs = e - s;
             net.zero_grad();
             for (int i = s; i < e; ++i) {
-                net.forward(data.images.col(idx[i]));
-                net.backward(data.images.col(idx[i]), data.labels[idx[i]]);
+                data.get_image_col(idx[i], x);
+                net.forward(x);
+                net.backward(x, data.label(idx[i]));
             }
             for (auto* l : layers) { l->dW /= bs; l->db /= bs; }
             net.update(static_cast<float>(lr));
@@ -140,7 +142,7 @@ BenchResult run_bench_eigen_batched(NetworkEigen& net, const ImageDataset& data,
     using Clock = std::chrono::high_resolution_clock;
     using Ms    = std::chrono::duration<double, std::milli>;
 
-    int n = data.cols(), in = data.images.rows();
+    int n = data.cols(), in = data.image_size();
     std::vector<int> idx(n); std::iota(idx.begin(), idx.end(), 0);
     std::mt19937 rng(42);
 
@@ -149,7 +151,10 @@ BenchResult run_bench_eigen_batched(NetworkEigen& net, const ImageDataset& data,
         for (int s = 0; s < n; s += batch_size) {
             int e = std::min(s + batch_size, n), bs = e - s;
             Eigen::MatrixXf X(in, bs); std::vector<int> labels(bs);
-            for (int i = 0; i < bs; ++i) { X.col(i) = data.images.col(idx[s+i]); labels[i] = data.labels[idx[s+i]]; }
+            for (int i = 0; i < bs; ++i) {
+                data.get_image_col(idx[s+i], X.col(i));
+                labels[i] = data.label(idx[s+i]);
+            }
             net.zero_grad();
             BatchCache c = net.forward_batch(X);
             net.backward_batch(X, c, labels, bs);
@@ -181,7 +186,8 @@ BenchResult run_bench_pmad_batched(Network& net, const ImageDataset& data,
     auto assemble = [&](int buf, int start, int bs) -> std::vector<int> {
         auto& Xb = ws.Xbuf(buf); std::vector<int> lbls(bs);
         for (int i = 0; i < bs; ++i) {
-            Xb.col(i) = data.images.col(idx[start+i]); lbls[i] = data.labels[idx[start+i]];
+            data.get_image_col(idx[start+i], Xb.col(i));
+            lbls[i] = data.label(idx[start+i]);
         }
         return lbls;
     };
@@ -228,8 +234,9 @@ int main() {
 
     std::printf("Loading dataset...\n");
     ImageDataset data = load_emnist_letters(data_dir, true);
-    std::printf("  %d images loaded (%.0f MB)\n\n",
-                data.cols(), data.images.size() * sizeof(float) / 1048576.0);
+    std::printf("  %d images loaded (%.0f MB raw, mmap-resident)\n\n",
+                data.cols(),
+                double(data.cols()) * data.image_size() / 1048576.0);
 
     std::printf("Benchmark: %d epochs  batch=%d  lr=%.4f\n", bench_epochs, batch_size, lr);
     std::printf("(1 warm-up epoch excluded from timing)\n\n");

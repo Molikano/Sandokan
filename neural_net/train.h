@@ -12,11 +12,13 @@
 
 inline double compute_accuracy(Network& net, const ImageDataset& ds) {
     int correct = 0, n = ds.cols();
+    Eigen::VectorXf x(ds.image_size());
     for (int i = 0; i < n; ++i) {
-        Eigen::VectorXf probs = net.forward(ds.images.col(i));
+        ds.get_image_col(i, x);
+        Eigen::VectorXf probs = net.forward(x);
         Eigen::Index    pred;
         probs.maxCoeff(&pred);
-        if (static_cast<int>(pred) == ds.labels[i]) ++correct;
+        if (static_cast<int>(pred) == ds.label(i)) ++correct;
     }
     return 100.0 * correct / n;
 }
@@ -44,8 +46,8 @@ inline void train_batched(Network& net,
         std::vector<int> lbls(bs);
         for (int i = 0; i < bs; ++i) {
             const int idx = indices[start + i];
-            Xb.col(i)     = train_set.images.col(idx);
-            lbls[i]       = train_set.labels[idx];
+            train_set.get_image_col(idx, Xb.col(i));
+            lbls[i] = train_set.label(idx);
         }
         return lbls;
     };
@@ -85,11 +87,14 @@ inline void train_batched(Network& net,
             } else {
                 // Partial last batch: per-sample fallback
                 net.zero_grad();
+                Eigen::VectorXf x(train_set.image_size());
                 for (int i = start; i < end; ++i) {
-                    const int   idx   = indices[i];
-                    auto        probs = net.forward(train_set.images.col(idx));
-                    total_loss -= std::log(probs(train_set.labels[idx]) + 1e-7f);
-                    net.backward(train_set.images.col(idx), train_set.labels[idx]);
+                    const int idx   = indices[i];
+                    const int label = train_set.label(idx);
+                    train_set.get_image_col(idx, x);
+                    auto probs = net.forward(x);
+                    total_loss -= std::log(probs(label) + 1e-7f);
+                    net.backward(x, label);
                 }
                 for (Layer* l : net.layers) { l->dW /= bs; l->db /= bs; }
                 net.update(lr);
