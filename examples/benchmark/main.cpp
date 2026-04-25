@@ -15,17 +15,17 @@
 
 // ============================================================
 // Plain-Eigen Network — identical math, all plain MatrixXf/VectorXf (no PMAD)
+// Generic over any architecture.
 // ============================================================
 
 struct LayerEigen {
     Eigen::MatrixXf W, dW;
-    Eigen::VectorXf b, db, a, z, delta;
+    Eigen::VectorXf b, db, a, z;
 
     LayerEigen(int in, int out, std::mt19937& rng)
         : W(out, in), dW(Eigen::MatrixXf::Zero(out, in)),
           b(Eigen::VectorXf::Zero(out)), db(Eigen::VectorXf::Zero(out)),
-          a(Eigen::VectorXf::Zero(out)), z(Eigen::VectorXf::Zero(out)),
-          delta(Eigen::VectorXf::Zero(out))
+          a(Eigen::VectorXf::Zero(out)), z(Eigen::VectorXf::Zero(out))
     {
         std::normal_distribution<float> dist(0.0f, std::sqrt(2.0f / in));
         for (int r = 0; r < out; ++r)
@@ -33,66 +33,80 @@ struct LayerEigen {
                 W(r, c) = dist(rng);
     }
     void zero_grad() { dW.setZero(); db.setZero(); }
-    void scale_grad(float s) { dW *= s; db *= s; }
 };
 
 struct NetworkEigen {
-    static constexpr int INPUT_SIZE  = 784;
-    static constexpr int HIDDEN1     = 64;
-    static constexpr int HIDDEN2     = 64;
-    static constexpr int OUTPUT_SIZE = 26;
+    std::vector<LayerEigen> layers;
 
-    std::mt19937 rng { 42 };
-    LayerEigen hidden1 { INPUT_SIZE, HIDDEN1,     rng };
-    LayerEigen hidden2 { HIDDEN1,    HIDDEN2,     rng };
-    LayerEigen output  { HIDDEN2,    OUTPUT_SIZE, rng };
-    std::vector<LayerEigen*> layers { &hidden1, &hidden2, &output };
+    explicit NetworkEigen(const std::vector<int>& sizes) {
+        std::mt19937 rng(42);
+        for (int i = 0; i + 1 < (int)sizes.size(); ++i)
+            layers.emplace_back(sizes[i], sizes[i+1], rng);
+    }
+
+    int num_layers() const { return (int)layers.size(); }
 
     Eigen::VectorXf forward(const Eigen::Ref<const Eigen::VectorXf>& x) {
-        hidden1.z = hidden1.W * x         + hidden1.b; hidden1.a = relu(hidden1.z);
-        hidden2.z = hidden2.W * hidden1.a + hidden2.b; hidden2.a = relu(hidden2.z);
-        output.z  = output.W  * hidden2.a + output.b;
-        return softmax(output.z);
+        const int L = num_layers();
+        Eigen::VectorXf a = x;
+        for (int i = 0; i < L; ++i) {
+            layers[i].z = layers[i].W * a + layers[i].b;
+            layers[i].a = (i < L - 1) ? relu(layers[i].z) : softmax(layers[i].z);
+            a = layers[i].a;
+        }
+        return a;
     }
 
     void backward(const Eigen::Ref<const Eigen::VectorXf>& x,
                   const Eigen::Ref<const Eigen::VectorXf>& output_delta) {
-        output.delta = output_delta;
-        hidden2.delta = (output.W.transpose() * output.delta).cwiseProduct(relu_prime(hidden2.z));
-        hidden1.delta = (hidden2.W.transpose() * hidden2.delta).cwiseProduct(relu_prime(hidden1.z));
-        output.dW  += output.delta  * hidden2.a.transpose(); output.db  += output.delta;
-        hidden2.dW += hidden2.delta * hidden1.a.transpose(); hidden2.db += hidden2.delta;
-        hidden1.dW += hidden1.delta * x.transpose();         hidden1.db += hidden1.delta;
+        const int L = num_layers();
+        std::vector<Eigen::VectorXf> deltas(L);
+        deltas[L-1] = output_delta;
+        for (int i = L - 2; i >= 0; --i)
+            deltas[i] = (layers[i+1].W.transpose() * deltas[i+1])
+                            .cwiseProduct(relu_prime(layers[i].z));
+        for (int i = 0; i < L; ++i) {
+            if (i == 0) layers[0].dW.noalias() += deltas[0] * x.transpose();
+            else        layers[i].dW.noalias() += deltas[i] * layers[i-1].a.transpose();
+            layers[i].db += deltas[i];
+        }
     }
 
-    void update(float lr) {
-        for (auto* l : layers) { l->W -= lr * l->dW; l->b -= lr * l->db; }
-    }
-    void zero_grad()       { for (auto* l : layers) l->zero_grad(); }
-    void scale_grad(float s) { for (auto* l : layers) l->scale_grad(s); }
+    using ZA = std::pair<std::vector<Eigen::MatrixXf>, std::vector<Eigen::MatrixXf>>;
 
-    BatchCache forward_batch(const Eigen::Ref<const Eigen::MatrixXf>& X) {
-        BatchCache c;
-        c.Z1 = (hidden1.W * X).colwise()    + hidden1.b; c.A1 = c.Z1.cwiseMax(0.0f);
-        c.Z2 = (hidden2.W * c.A1).colwise() + hidden2.b; c.A2 = c.Z2.cwiseMax(0.0f);
-        c.Z3 = (output.W  * c.A2).colwise() + output.b;  c.A3 = softmax_cols(c.Z3);
-        return c;
+    ZA forward_batch(const Eigen::Ref<const Eigen::MatrixXf>& X) {
+        const int L = num_layers();
+        std::vector<Eigen::MatrixXf> Z(L), A(L);
+        for (int i = 0; i < L; ++i) {
+            if (i == 0) Z[i] = (layers[i].W * X).colwise()    + layers[i].b;
+            else        Z[i] = (layers[i].W * A[i-1]).colwise() + layers[i].b;
+            A[i] = (i < L - 1) ? Z[i].cwiseMax(0.0f) : softmax_cols(Z[i]);
+        }
+        return {std::move(Z), std::move(A)};
     }
 
     void backward_batch(const Eigen::Ref<const Eigen::MatrixXf>& X,
-                        const BatchCache& c,
-                        const std::vector<int>& labels, int bs) {
-        Eigen::MatrixXf D3 = c.A3;
-        for (int j = 0; j < bs; ++j) D3(labels[j], j) -= 1.0f;
-        Eigen::MatrixXf D2 = ((output.W.transpose()  * D3).array()
-                              * (c.Z2.array() > 0.0f).cast<float>()).matrix();
-        Eigen::MatrixXf D1 = ((hidden2.W.transpose() * D2).array()
-                              * (c.Z1.array() > 0.0f).cast<float>()).matrix();
-        const float inv = 1.0f / bs;
-        output.dW  += inv * (D3 * c.A2.transpose()); output.db  += inv * D3.rowwise().sum();
-        hidden2.dW += inv * (D2 * c.A1.transpose()); hidden2.db += inv * D2.rowwise().sum();
-        hidden1.dW += inv * (D1 * X.transpose());    hidden1.db += inv * D1.rowwise().sum();
+                        const std::vector<Eigen::MatrixXf>& Z,
+                        const std::vector<Eigen::MatrixXf>& A,
+                        const Eigen::Ref<const Eigen::MatrixXf>& output_delta) {
+        const int L = num_layers();
+        std::vector<Eigen::MatrixXf> D(L);
+        D[L-1] = output_delta;
+        for (int i = L - 2; i >= 0; --i)
+            D[i] = ((layers[i+1].W.transpose() * D[i+1]).array()
+                    * (Z[i].array() > 0.0f).cast<float>()).matrix();
+        for (int i = 0; i < L; ++i) {
+            if (i == 0) layers[0].dW.noalias() += D[0] * X.transpose();
+            else        layers[i].dW.noalias() += D[i] * A[i-1].transpose();
+            layers[i].db += D[i].rowwise().sum();
+        }
     }
+
+    void update(float lr) {
+        for (auto& l : layers) { l.W -= lr * l.dW; l.b -= lr * l.db; }
+    }
+    void zero_grad() { for (auto& l : layers) l.zero_grad(); }
+    void scale_grad(float s) { for (auto& l : layers) { l.dW *= s; l.db *= s; } }
 };
 
 // ============================================================
@@ -148,18 +162,22 @@ BenchResult run_bench_eigen_batched(NetworkEigen& net, const ImageDataset& data,
     std::vector<int> idx(n); std::iota(idx.begin(), idx.end(), 0);
     std::mt19937 rng(42);
 
+    Eigen::MatrixXf X(in, batch_size);
+    std::vector<int> labels(batch_size);
+
     auto run_epoch = [&]() {
         std::shuffle(idx.begin(), idx.end(), rng);
         for (int s = 0; s < n; s += batch_size) {
             int e = std::min(s + batch_size, n), bs = e - s;
-            Eigen::MatrixXf X(in, bs); std::vector<int> labels(bs);
+            if (bs != batch_size) continue;
             for (int i = 0; i < bs; ++i) {
                 data.get_image_col(idx[s+i], X.col(i));
                 labels[i] = data.label(idx[s+i]);
             }
             net.zero_grad();
-            BatchCache c = net.forward_batch(X);
-            net.backward_batch(X, c, labels, bs);
+            auto [Z, A] = net.forward_batch(X);
+            auto [_, delta] = CrossEntropyLoss{}(A.back(), labels);
+            net.backward_batch(X, Z, A, delta);
             net.update(lr);
         }
     };
@@ -230,7 +248,7 @@ BenchResult run_bench_pmad_batched(Network& net, const ImageDataset& data,
 
 int main() {
     const std::string      data_dir     = "data/Emnist Letters";
-    const std::vector<int> arch         = { 784, 64, 64, 26 };
+    const std::vector<int> arch         = { 784, 256, 128, 256, 26 };
     const int              bench_epochs = 5;
     const int              batch_size   = 128;
     const float            lr           = 0.01f;
@@ -241,7 +259,9 @@ int main() {
                 data.cols(),
                 double(data.cols()) * data.image_size() / 1048576.0);
 
-    std::printf("Benchmark: %d epochs  batch=%d  lr=%.4f\n", bench_epochs, batch_size, lr);
+    std::printf("Architecture:");
+    for (int s : arch) std::printf(" %d", s);
+    std::printf("\nBenchmark: %d epochs  batch=%d  lr=%.4f\n", bench_epochs, batch_size, lr);
     std::printf("(1 warm-up epoch excluded from timing)\n\n");
 
     // ---- PMAD single-sample ----
@@ -252,7 +272,7 @@ int main() {
 
     // ---- Eigen single-sample ----
     BenchResult eigen_single;
-    { NetworkEigen net; eigen_single = run_bench_single(net, data, bench_epochs, batch_size, lr); }
+    { NetworkEigen net(arch); eigen_single = run_bench_single(net, data, bench_epochs, batch_size, lr); }
 
     // ---- PMAD batched+workspace+parallel ----
     init_pmad(arch, batch_size);
@@ -262,10 +282,10 @@ int main() {
 
     // ---- Eigen batched ----
     BenchResult eigen_batched;
-    { NetworkEigen net; eigen_batched = run_bench_eigen_batched(net, data, bench_epochs, batch_size, lr); }
+    { NetworkEigen net(arch); eigen_batched = run_bench_eigen_batched(net, data, bench_epochs, batch_size, lr); }
 
     // ---- Report ----
-    std::printf("%-30s  %10s  %12s  %14s  %14s\n",
+    std::printf("\n%-30s  %10s  %12s  %14s  %14s\n",
                 "Backend", "Total (ms)", "ms/epoch", "ms/sample", "samples/sec");
     std::printf("%s\n", std::string(84, '-').c_str());
     auto row = [](const char* n, const BenchResult& r) {

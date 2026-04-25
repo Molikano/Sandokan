@@ -32,6 +32,7 @@ struct Network {
     std::vector<Activation>             acts;
     std::mt19937                        rng { 42 };
     std::vector<std::unique_ptr<Layer>> layers;
+    std::vector<Eigen::VectorXf>        as_;   // activation cache for single-sample path
 
     explicit Network(std::vector<int>       layer_sizes,
                      std::vector<Activation> activations = {})
@@ -46,58 +47,48 @@ struct Network {
         }
         for (int i = 0; i < L; ++i)
             layers.push_back(std::make_unique<Layer>(sizes[i], sizes[i+1], rng));
+        as_.resize(L + 1);
+        for (int i = 0; i <= L; ++i)
+            as_[i] = Eigen::VectorXf(sizes[i]);
     }
 
     int input_size()  const { return sizes.front(); }
     int output_size() const { return sizes.back();  }
     int num_layers()  const { return (int)layers.size(); }
 
-    // Single-sample forward
+    // Single-sample forward — caches activations in as_ for use by backward().
     Eigen::VectorXf forward(const Eigen::Ref<const Eigen::VectorXf>& x) {
-        Eigen::VectorXf a = x;
+        as_[0] = x;
         for (int i = 0; i < num_layers(); ++i) {
-            Eigen::VectorXf z = layers[i]->W * a + layers[i]->b;
+            Eigen::VectorXf z = layers[i]->W * as_[i] + layers[i]->b;
             switch (acts[i]) {
-                case Activation::Linear:  a = z;          break;
-                case Activation::ReLU:    a = relu(z);    break;
-                case Activation::Sigmoid: a = sigmoid(z); break;
-                case Activation::Softmax: a = softmax(z); break;
+                case Activation::Linear:  as_[i+1] = z;          break;
+                case Activation::ReLU:    as_[i+1] = relu(z);    break;
+                case Activation::Sigmoid: as_[i+1] = sigmoid(z); break;
+                case Activation::Softmax: as_[i+1] = softmax(z); break;
             }
         }
-        return a;
+        return as_.back();
     }
 
-    // Single-sample backward.
+    // Single-sample backward — uses as_ cached by the preceding forward() call.
     // output_delta = dL/dZ_output from the loss function (not divided by batch size).
-    void backward(const Eigen::Ref<const Eigen::VectorXf>& x,
+    void backward(const Eigen::Ref<const Eigen::VectorXf>& /*x*/,
                   const Eigen::Ref<const Eigen::VectorXf>& output_delta) {
         const int L = num_layers();
-        std::vector<Eigen::VectorXf> as(L + 1);
-        as[0] = x;
-        for (int i = 0; i < L; ++i) {
-            Eigen::VectorXf z = layers[i]->W * as[i] + layers[i]->b;
-            switch (acts[i]) {
-                case Activation::Linear:  as[i+1] = z;          break;
-                case Activation::ReLU:    as[i+1] = relu(z);    break;
-                case Activation::Sigmoid: as[i+1] = sigmoid(z); break;
-                case Activation::Softmax: as[i+1] = softmax(z); break;
-            }
-        }
-
         std::vector<Eigen::VectorXf> deltas(L);
         deltas[L-1] = output_delta;
         for (int i = L - 2; i >= 0; --i) {
             deltas[i] = layers[i+1]->W.transpose() * deltas[i+1];
             switch (acts[i]) {
                 case Activation::Linear:  break;
-                case Activation::ReLU:    deltas[i].array() *= (as[i+1].array() > 0.0f).cast<float>(); break;
-                case Activation::Sigmoid: deltas[i].array() *= as[i+1].array() * (1.0f - as[i+1].array()); break;
+                case Activation::ReLU:    deltas[i].array() *= (as_[i+1].array() > 0.0f).cast<float>(); break;
+                case Activation::Sigmoid: deltas[i].array() *= as_[i+1].array() * (1.0f - as_[i+1].array()); break;
                 case Activation::Softmax: break;
             }
         }
-
         for (int i = 0; i < L; ++i) {
-            layers[i]->dW.noalias() += deltas[i] * as[i].transpose();
+            layers[i]->dW.noalias() += deltas[i] * as_[i].transpose();
             layers[i]->db           += deltas[i];
         }
     }

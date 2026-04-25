@@ -6,11 +6,6 @@
 #include <stdexcept>
 #include <vector>
 
-// BatchCache — plain-Eigen version (bench Eigen path only)
-struct BatchCache {
-    Eigen::MatrixXf Z1, A1, Z2, A2, Z3, A3;
-};
-
 // BatchWorkspace — PMAD-backed computation + input buffers
 //
 // Parameterized by the full architecture sizes vector and batch_size.

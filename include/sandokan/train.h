@@ -11,15 +11,31 @@
 #include <random>
 #include <vector>
 
-inline double compute_accuracy(Network& net, const ImageDataset& ds) {
+inline double compute_accuracy(Network& net, const ImageDataset& ds,
+                               BatchWorkspace& ws, int batch_size) {
     int correct = 0, n = ds.cols();
-    Eigen::VectorXf x(ds.image_size());
-    for (int i = 0; i < n; ++i) {
-        ds.get_image_col(i, x);
-        Eigen::VectorXf probs = net.forward(x);
-        Eigen::Index    pred;
-        probs.maxCoeff(&pred);
-        if (static_cast<int>(pred) == ds.label(i)) ++correct;
+    const int L = net.num_layers();
+    for (int s = 0; s < n; s += batch_size) {
+        const int e  = std::min(s + batch_size, n);
+        const int bs = e - s;
+        if (bs == batch_size) {
+            for (int i = 0; i < bs; ++i)
+                ds.get_image_col(s + i, ws.Xbuf(0).col(i));
+            net.forward_batch(ws.Xbuf(0), ws);
+            for (int j = 0; j < bs; ++j) {
+                Eigen::Index pred;
+                ws.A(L-1).col(j).maxCoeff(&pred);
+                if (static_cast<int>(pred) == ds.label(s + j)) ++correct;
+            }
+        } else {
+            Eigen::VectorXf x(ds.image_size());
+            for (int i = s; i < e; ++i) {
+                ds.get_image_col(i, x);
+                Eigen::Index pred;
+                net.forward(x).maxCoeff(&pred);
+                if (static_cast<int>(pred) == ds.label(i)) ++correct;
+            }
+        }
     }
     return 100.0 * correct / n;
 }
@@ -105,8 +121,8 @@ inline void train_batched(Network& net,
         }
 
         double avg_loss  = total_loss / n;
-        double train_acc = compute_accuracy(net, train_set);
-        double test_acc  = compute_accuracy(net, test_set);
+        double train_acc = compute_accuracy(net, train_set, ws, batch_size);
+        double test_acc  = compute_accuracy(net, test_set,  ws, batch_size);
         std::printf("%-10d %-12.4f %-14.2f %-12.2f\n",
                     epoch, avg_loss, train_acc, test_acc);
         std::fflush(stdout);
