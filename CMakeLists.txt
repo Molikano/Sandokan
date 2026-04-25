@@ -43,4 +43,57 @@ target_link_libraries(sandokan INTERFACE
     ${ACCELERATE_FRAMEWORK}
 )
 
-add_subdirectory(examples)
+option(SANDOKAN_BUILD_EXAMPLES "Build Sandokan examples" ON)
+if(SANDOKAN_BUILD_EXAMPLES)
+    add_subdirectory(examples)
+endif()
+
+# ---------- Installation (Make it universal) ----------
+
+include(GNUInstallDirs)
+
+# 1. Install the targets (compiled pmad static library and sandokan interface)
+install(TARGETS sandokan pmad
+    EXPORT SandokanTargets
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+
+# 2. Install your master header and the sandokan directory
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/include/
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+
+# 3. Install the pmad headers
+install(DIRECTORY ${PMAD_DIR}/include/
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/pmad
+)
+
+# 4. Export CMake configs so other projects can find it using find_package(Sandokan)
+install(EXPORT SandokanTargets
+    FILE SandokanTargets.cmake
+    NAMESPACE Sandokan::
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/Sandokan
+)
+
+# Generate a config file
+include(CMakePackageConfigHelpers)
+configure_package_config_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/Config.cmake.in
+    "${CMAKE_CURRENT_BINARY_DIR}/SandokanConfig.cmake"
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/Sandokan
+    NO_SET_AND_CHECK_MACRO
+    NO_CHECK_REQUIRED_COMPONENTS_MACRO
+)
+write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/SandokanConfigVersion.cmake"
+    VERSION "${PROJECT_VERSION}"
+    COMPATIBILITY AnyNewerVersion
+)
+
+install(FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/SandokanConfig.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/SandokanConfigVersion.cmake"
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/Sandokan
+)

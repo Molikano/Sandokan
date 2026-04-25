@@ -1,0 +1,16 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# Sandokan's interface target depends on Eigen3 and Accelerate
+find_dependency(Eigen3)
+
+# Accelerate is an Apple framework
+if(APPLE)
+    find_library(ACCELERATE_FRAMEWORK Accelerate REQUIRED)
+endif()
+
+# Include the auto-generated targets file
+include("${CMAKE_CURRENT_LIST_DIR}/SandokanTargets.cmake")
+
+check_required_components(Sandokan)

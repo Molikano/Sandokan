@@ -1,0 +1,41 @@
+==================================================
+   HOW TO USE THE SANDOKAN LIBRARY
+==================================================
+
+Sandokan is designed to be incredibly easy to drop into your existing C++ projects. You do not need to download or install anything manually.
+
+--------------------------------------------------
+1. Add to your CMakeLists.txt
+--------------------------------------------------
+Simply copy and paste this into your project's CMakeLists.txt file. CMake will automatically download Sandokan from GitHub, compile it, and link all required dependencies (like Eigen3) for you in the background!
+
+   include(FetchContent)
+
+   # 1. Download Sandokan automatically
+   FetchContent_Declare(
+       Sandokan
+       GIT_REPOSITORY https://github.com/Molikano/Sandokan.git
+       GIT_TAG        main 
+   )
+   FetchContent_MakeAvailable(Sandokan)
+
+   # 2. Add your executable
+   add_executable(my_awesome_app main.cpp)
+
+   # 3. Link Sandokan to your app
+   target_link_libraries(my_awesome_app PRIVATE Sandokan::sandokan)
+
+
+--------------------------------------------------
+2. Include in your C++ Code
+--------------------------------------------------
+Once CMake has linked the library, you can instantly use the master header in your code:
+
+   #include <iostream>
+   #include <sandokan.h> // Access the entire library
+
+   int main() {
+       std::cout << "Sandokan is ready!" << std::endl;
+       // ... write your code here
+       return 0;
+   }
