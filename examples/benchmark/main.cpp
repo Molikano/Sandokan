@@ -10,6 +10,7 @@
 
 #include <sandokan/allocator.h>
 #include <sandokan/dataset.h>
+#include <sandokan/layers.h>
 #include <sandokan/loss.h>
 #include <sandokan/network.h>
 
@@ -243,15 +244,99 @@ BenchResult run_bench_pmad_batched(Network& net, const ImageDataset& data,
 }
 
 // ============================================================
+// Module network with residual block (Module API benchmark)
+// Architecture: 784 → 64(ReLU) → [64→64 ResBlock] → 26(Softmax)
+// ============================================================
+
+struct BenchResBlock : Module {
+    Linear fc1, fc2;
+    ReLU   relu1, relu2;
+
+    BenchResBlock(int f) : fc1(f, f), fc2(f, f) {
+        register_module(fc1); register_module(fc2);
+    }
+
+    Eigen::MatrixXf forward(const Eigen::MatrixXf& x) override {
+        return relu2.forward(fc2.forward(relu1.forward(fc1.forward(x)))) + x;
+    }
+
+    Eigen::MatrixXf backward(const Eigen::MatrixXf& dy) override {
+        return fc1.backward(relu1.backward(fc2.backward(relu2.backward(dy)))) + dy;
+    }
+};
+
+struct SmallResNet : Module {
+    Linear        proj { 784, 64 };
+    ReLU          relu0;
+    BenchResBlock res  { 64 };
+    Linear        head { 64, 26 };
+    Softmax       sm;
+
+    SmallResNet() {
+        register_module(proj); register_module(res); register_module(head);
+    }
+
+    Eigen::MatrixXf forward(const Eigen::MatrixXf& x) override {
+        return sm.forward(head.forward(res.forward(relu0.forward(proj.forward(x)))));
+    }
+
+    Eigen::MatrixXf backward(const Eigen::MatrixXf& dy) override {
+        auto d = head.backward(sm.backward(dy));
+        d = res.backward(d);
+        return proj.backward(relu0.backward(d));
+    }
+};
+
+BenchResult run_bench_module_batched(Module& net, const ImageDataset& data,
+                                     int epochs, int batch_size, float lr) {
+    using Clock = std::chrono::high_resolution_clock;
+    using Ms    = std::chrono::duration<double, std::milli>;
+
+    int n = data.cols();
+    std::vector<int> idx(n); std::iota(idx.begin(), idx.end(), 0);
+    std::mt19937 rng(42);
+
+    Eigen::MatrixXf  X(data.image_size(), batch_size);
+    std::vector<int> labels(batch_size);
+
+    auto run_epoch = [&]() {
+        std::shuffle(idx.begin(), idx.end(), rng);
+        for (int s = 0; s < n; s += batch_size) {
+            int e = std::min(s + batch_size, n), bs = e - s;
+            if (bs != batch_size) continue;
+            for (int i = 0; i < bs; ++i) {
+                data.get_image_col(idx[s+i], X.col(i));
+                labels[i] = data.label(idx[s+i]);
+            }
+            net.zero_grad();
+            auto probs = net.forward(X);
+            auto [_, delta] = CrossEntropyLoss{}(probs, labels);
+            net.backward(delta);
+            net.update(lr);
+        }
+    };
+
+    run_epoch();
+    auto t0 = Clock::now();
+    for (int ep = 0; ep < epochs; ++ep) run_epoch();
+    double ms = Ms(Clock::now() - t0).count();
+    int    total = epochs * n;
+    return { ms, ms/epochs, ms/total, total/(ms/1000.0) };
+}
+
+// ============================================================
 // Main
 // ============================================================
 
 int main() {
-    const std::string      data_dir     = "data/Emnist Letters";
-    const std::vector<int> arch         = { 784, 256, 128, 256, 26 };
-    const int              bench_epochs = 5;
-    const int              batch_size   = 128;
-    const float            lr           = 0.01f;
+    const std::string data_dir     = "data/Emnist Letters";
+    // Sequential paths: {784, 64, 64, 26}
+    const std::vector<int> arch_seq = { 784, 64, 64, 26 };
+    // Module path: ResBlock adds an extra 64×64 layer → needs count=2 in the 16384B class
+    const std::vector<int> arch_mod = { 784, 64, 64, 64, 26 };
+    const int   bench_epochs = 5;
+    const int   batch_size   = 128;
+    const float lr           = 0.01f;
 
     std::printf("Loading dataset...\n");
     ImageDataset data = load_emnist_letters(data_dir, true);
@@ -259,49 +344,61 @@ int main() {
                 data.cols(),
                 double(data.cols()) * data.image_size() / 1048576.0);
 
-    std::printf("Architecture:");
-    for (int s : arch) std::printf(" %d", s);
+    std::printf("Sequential arch:"); for (int s : arch_seq) std::printf(" %d", s);
+    std::printf("\nModule arch (with ResBlock):"); for (int s : arch_mod) std::printf(" %d", s);
     std::printf("\nBenchmark: %d epochs  batch=%d  lr=%.4f\n", bench_epochs, batch_size, lr);
     std::printf("(1 warm-up epoch excluded from timing)\n\n");
 
-    // ---- PMAD single-sample ----
-    init_pmad(arch, batch_size);
-    BenchResult pmad_single;
-    { Network net(arch); pmad_single = run_bench_single(net, data, bench_epochs, batch_size, lr); }
-    destroy_pmad();
-
-    // ---- Eigen single-sample ----
-    BenchResult eigen_single;
-    { NetworkEigen net(arch); eigen_single = run_bench_single(net, data, bench_epochs, batch_size, lr); }
+    // Batched paths run first — CPU cold, no thermal throttle from prior load.
+    // Single-sample paths run after — slower and hotter, but that's expected.
 
     // ---- PMAD batched+workspace+parallel ----
-    init_pmad(arch, batch_size);
+    init_pmad(arch_seq, batch_size);
     BenchResult pmad_batched;
-    { Network net(arch); pmad_batched = run_bench_pmad_batched(net, data, bench_epochs, batch_size, lr); }
+    { Network net(arch_seq); pmad_batched = run_bench_pmad_batched(net, data, bench_epochs, batch_size, lr); }
     destroy_pmad();
 
     // ---- Eigen batched ----
     BenchResult eigen_batched;
-    { NetworkEigen net(arch); eigen_batched = run_bench_eigen_batched(net, data, bench_epochs, batch_size, lr); }
+    { NetworkEigen net(arch_seq); eigen_batched = run_bench_eigen_batched(net, data, bench_epochs, batch_size, lr); }
+
+    // ---- Module+ResBlock batched ----
+    init_pmad(arch_mod, batch_size);
+    BenchResult module_batched;
+    { nn::manual_seed(42); SmallResNet net; module_batched = run_bench_module_batched(net, data, bench_epochs, batch_size, lr); }
+    destroy_pmad();
+
+    // ---- PMAD single-sample ----
+    init_pmad(arch_seq, batch_size);
+    BenchResult pmad_single;
+    { Network net(arch_seq); pmad_single = run_bench_single(net, data, bench_epochs, batch_size, lr); }
+    destroy_pmad();
+
+    // ---- Eigen single-sample ----
+    BenchResult eigen_single;
+    { NetworkEigen net(arch_seq); eigen_single = run_bench_single(net, data, bench_epochs, batch_size, lr); }
 
     // ---- Report ----
-    std::printf("\n%-30s  %10s  %12s  %14s  %14s\n",
+    std::printf("\n%-32s  %10s  %12s  %14s  %14s\n",
                 "Backend", "Total (ms)", "ms/epoch", "ms/sample", "samples/sec");
-    std::printf("%s\n", std::string(84, '-').c_str());
+    std::printf("%s\n", std::string(88, '-').c_str());
     auto row = [](const char* n, const BenchResult& r) {
-        std::printf("%-30s  %10.1f  %12.1f  %14.4f  %14.0f\n",
+        std::printf("%-32s  %10.1f  %12.1f  %14.4f  %14.0f\n",
                     n, r.total_ms, r.ms_per_epoch, r.ms_per_sample, r.samples_per_sec);
     };
-    row("PMAD single-sample",          pmad_single);
-    row("Eigen single-sample",         eigen_single);
-    row("PMAD batched+ws+parallel",    pmad_batched);
-    row("Eigen batched",               eigen_batched);
-    std::printf("%s\n", std::string(84, '-').c_str());
+    row("PMAD single-sample (seq)",      pmad_single);
+    row("Eigen single-sample (seq)",     eigen_single);
+    row("PMAD batched+ws+parallel (seq)",pmad_batched);
+    row("Eigen batched (seq)",           eigen_batched);
+    row("Module+ResBlock batched",       module_batched);
+    std::printf("%s\n", std::string(88, '-').c_str());
     std::printf("Batched speedup:  PMAD %.2fx   Eigen %.2fx\n",
                 pmad_single.total_ms / pmad_batched.total_ms,
                 eigen_single.total_ms / eigen_batched.total_ms);
-    std::printf("PMAD vs Eigen batched: %.3fx %s\n",
+    std::printf("PMAD vs Eigen batched (seq): %.3fx %s\n",
                 eigen_batched.total_ms / pmad_batched.total_ms,
                 pmad_batched.total_ms <= eigen_batched.total_ms ? "(PMAD wins)" : "(Eigen wins)");
+    std::printf("Module overhead vs PMAD batched: %.3fx\n",
+                module_batched.total_ms / pmad_batched.total_ms);
     return 0;
 }
