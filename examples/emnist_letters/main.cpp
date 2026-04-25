@@ -1,8 +1,8 @@
 #include <cstdio>
-#include "dataloader.h"
-#include "network.h"
-#include "pmad.h"
-#include "train.h"
+#include <sandokan/allocator.h>
+#include <sandokan/dataset.h>
+#include <sandokan/network.h>
+#include <sandokan/train.h>
 
 int main() {
     const std::string data_dir = "data/Emnist Letters";

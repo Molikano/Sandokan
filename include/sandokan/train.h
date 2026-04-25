@@ -1,6 +1,6 @@
 #pragma once
 
-#include "dataloader.h"
+#include "dataset.h"
 #include "network.h"
 #include <algorithm>
 #include <cmath>

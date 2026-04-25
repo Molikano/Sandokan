@@ -8,9 +8,9 @@
 
 #include <Eigen/Dense>
 
-#include "dataloader.h"
-#include "network.h"
-#include "pmad.h"
+#include <sandokan/allocator.h>
+#include <sandokan/dataset.h>
+#include <sandokan/network.h>
 
 // ============================================================
 // Plain-Eigen Network — identical math, all plain MatrixXf/VectorXf (no PMAD)

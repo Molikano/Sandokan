@@ -1,0 +1,2 @@
+add_subdirectory(emnist_letters)
+add_subdirectory(benchmark)
