@@ -249,12 +249,11 @@ BenchResult run_bench_pmad_batched(Network& net, const ImageDataset& data,
 // ============================================================
 
 struct BenchResBlock : Module {
-    Linear fc1, fc2;
-    ReLU   relu1, relu2;
+    Submodule<Linear> fc1 { *this, 64, 64 };
+    Submodule<Linear> fc2 { *this, 64, 64 };
+    ReLU relu1, relu2;
 
-    BenchResBlock(int f) : fc1(f, f), fc2(f, f) {
-        register_module(fc1); register_module(fc2);
-    }
+    BenchResBlock() = default;
 
     Eigen::MatrixXf forward(const Eigen::MatrixXf& x) override {
         return relu2.forward(fc2.forward(relu1.forward(fc1.forward(x)))) + x;
@@ -266,15 +265,13 @@ struct BenchResBlock : Module {
 };
 
 struct SmallResNet : Module {
-    Linear        proj { 784, 64 };
-    ReLU          relu0;
-    BenchResBlock res  { 64 };
-    Linear        head { 64, 26 };
-    Softmax       sm;
+    Submodule<Linear>        proj { *this, 784, 64 };
+    ReLU                     relu0;
+    Submodule<BenchResBlock> res  { *this };
+    Submodule<Linear>        head { *this, 64, 26 };
+    Softmax                  sm;
 
-    SmallResNet() {
-        register_module(proj); register_module(res); register_module(head);
-    }
+    SmallResNet() = default;
 
     Eigen::MatrixXf forward(const Eigen::MatrixXf& x) override {
         return sm.forward(head.forward(res.forward(relu0.forward(proj.forward(x)))));
@@ -330,10 +327,7 @@ BenchResult run_bench_module_batched(Module& net, const ImageDataset& data,
 
 int main() {
     const std::string data_dir     = "data/Emnist Letters";
-    // Sequential paths: {784, 64, 64, 26}
     const std::vector<int> arch_seq = { 784, 64, 64, 26 };
-    // Module path: ResBlock adds an extra 64×64 layer → needs count=2 in the 16384B class
-    const std::vector<int> arch_mod = { 784, 64, 64, 64, 26 };
     const int   bench_epochs = 5;
     const int   batch_size   = 128;
     const float lr           = 0.01f;
@@ -345,7 +339,7 @@ int main() {
                 double(data.cols()) * data.image_size() / 1048576.0);
 
     std::printf("Sequential arch:"); for (int s : arch_seq) std::printf(" %d", s);
-    std::printf("\nModule arch (with ResBlock):"); for (int s : arch_mod) std::printf(" %d", s);
+    std::printf("\nModule arch: derived automatically via init_pmad_for()");
     std::printf("\nBenchmark: %d epochs  batch=%d  lr=%.4f\n", bench_epochs, batch_size, lr);
     std::printf("(1 warm-up epoch excluded from timing)\n\n");
 
@@ -363,9 +357,8 @@ int main() {
     { NetworkEigen net(arch_seq); eigen_batched = run_bench_eigen_batched(net, data, bench_epochs, batch_size, lr); }
 
     // ---- Module+ResBlock batched ----
-    init_pmad(arch_mod, batch_size);
     BenchResult module_batched;
-    { nn::manual_seed(42); SmallResNet net; module_batched = run_bench_module_batched(net, data, bench_epochs, batch_size, lr); }
+    { nn::manual_seed(42); SmallResNet net; init_pmad_for(); module_batched = run_bench_module_batched(net, data, bench_epochs, batch_size, lr); }
     destroy_pmad();
 
     // ---- PMAD single-sample ----

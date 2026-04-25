@@ -100,6 +100,23 @@ struct ImageDataset {
     int image_size() const { return pixels_per_image; }
     int label(int idx) const { return int(lbls[idx]) + label_offset; }
 
+    // Always returns raw 0-255 pixels regardless of the normalize flag.
+    // Use this for visualization — no flag toggling needed.
+    void get_raw_image_col(int idx, Eigen::Ref<Eigen::VectorXf> out) const {
+        const bool was = normalize;
+        const_cast<ImageDataset*>(this)->normalize = false;
+        get_image_col(idx, out);
+        const_cast<ImageDataset*>(this)->normalize = was;
+    }
+
+    // Copy normalization params from a source dataset (e.g. training set)
+    // and activate normalization. Avoids repeating mean/inv_sigma manually.
+    void apply_normalization_from(const ImageDataset& src) {
+        mean      = src.mean;
+        inv_sigma = src.inv_sigma;
+        normalize = true;
+    }
+
     // Hot path: writes one image (orientation-fixed, optionally normalized)
     // into `out`. `out` must have size == pixels_per_image. Called from the
     // assembly thread; this is where the page-fault magic happens.

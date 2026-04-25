@@ -15,9 +15,9 @@ namespace nn {
 
 // Base class for all network modules.
 //
-// Subclass and implement forward() and backward(). Call register_module()
-// for each sub-module in the constructor — this wires zero_grad() and
-// update() to propagate automatically without overriding them.
+// Subclass and implement forward() and backward(). Use Submodule<T> for
+// member sub-modules — it registers automatically on construction so you
+// can't accidentally forget a register_module() call.
 //
 // backward() receives the upstream gradient and returns the downstream
 // gradient (dL/dx), accumulating parameter gradients as a side effect.
@@ -53,4 +53,27 @@ public:
 
     virtual void save(std::FILE* f) const { for (auto* m : children_) m->save(f); }
     virtual void load(std::FILE* f)       { for (auto* m : children_) m->load(f); }
+};
+
+// Submodule<T> — wraps T and auto-registers with a parent Module.
+//
+// Use instead of plain T for member sub-modules so registration is
+// impossible to forget:
+//
+//   struct MyNet : Module {
+//       Submodule<Linear>   fc1 { *this, 784, 128 };
+//       Submodule<Linear>   fc2 { *this, 128,  26 };
+//       Submodule<Softmax>  sm  { *this };
+//       MyNet() = default;  // nothing to forget
+//   };
+//
+// Submodule<T> IS-A T — call forward(), backward(), etc. directly.
+template<typename T>
+struct Submodule : T {
+    template<typename... Args>
+    Submodule(Module& parent, Args&&... args)
+        : T(std::forward<Args>(args)...)
+    {
+        parent.register_module(*this);
+    }
 };

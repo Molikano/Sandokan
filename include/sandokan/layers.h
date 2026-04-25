@@ -11,39 +11,62 @@
 #include <vector>
 
 // Linear layer with PMAD-backed gradient buffers.
-// init_pmad() must be called before constructing any Linear.
-// The activation cache (in_) is plain Eigen — allocated on the first
-// forward call and reused every subsequent call at the same batch size.
+// Construct the network freely — call init_pmad_for() afterwards to migrate
+// gradient buffers from the initial Eigen storage into the PMAD pool.
+// The activation cache (in_) is always plain Eigen.
 struct Linear : Module {
+    int                         out_feat_, in_feat_;
     Eigen::MatrixXf             W;
     Eigen::VectorXf             b;
+
+    // Gradient buffers — Eigen-owned until migrate_to_pmad() is called.
+    std::vector<float>          dW_buf_, db_buf_;
     float*                      dW_raw;
     float*                      db_raw;
+    bool                        pmad_owned_ = false;
     Eigen::Map<Eigen::MatrixXf> dW;
     Eigen::Map<Eigen::VectorXf> db;
+
     Eigen::MatrixXf             in_;
 
     Linear(int in_features, int out_features)
-        : W(out_features, in_features),
+        : out_feat_(out_features), in_feat_(in_features),
+          W(out_features, in_features),
           b(Eigen::VectorXf::Zero(out_features)),
-          dW_raw(static_cast<float*>(pmad_alloc(out_features * in_features * sizeof(float)))),
-          db_raw(static_cast<float*>(pmad_alloc(out_features * sizeof(float)))),
+          dW_buf_(size_t(out_features) * in_features, 0.0f),
+          db_buf_(size_t(out_features), 0.0f),
+          dW_raw(dW_buf_.data()),
+          db_raw(db_buf_.data()),
           dW(dW_raw, out_features, in_features),
           db(db_raw, out_features)
     {
-        if (!dW_raw || !db_raw)
-            throw std::runtime_error(
-                "PMAD Linear alloc failed — call init_pmad() before constructing the network");
         std::normal_distribution<float> dist(0.0f, std::sqrt(2.0f / in_features));
         for (int r = 0; r < out_features; ++r)
             for (int c = 0; c < in_features; ++c)
                 W(r, c) = dist(nn::global_rng());
-        dW.setZero(); db.setZero();
+        // Register for deferred PMAD migration by init_pmad_for().
+        detail::register_pending(out_features, in_features,
+                                 [this] { migrate_to_pmad(); });
     }
 
-    ~Linear() { pmad_free(dW_raw); pmad_free(db_raw); }
+    ~Linear() { if (pmad_owned_) { pmad_free(dW_raw); pmad_free(db_raw); } }
     Linear(const Linear&)            = delete;
     Linear& operator=(const Linear&) = delete;
+
+    // Called by init_pmad_for() after the pool is ready.
+    void migrate_to_pmad() {
+        auto* pw = static_cast<float*>(pmad_alloc(out_feat_ * in_feat_ * sizeof(float)));
+        auto* pb = static_cast<float*>(pmad_alloc(out_feat_ * sizeof(float)));
+        if (!pw || !pb) return; // stay on Eigen heap if pool is full
+        std::copy(dW_buf_.begin(), dW_buf_.end(), pw);
+        std::copy(db_buf_.begin(), db_buf_.end(), pb);
+        dW_buf_.clear(); dW_buf_.shrink_to_fit();
+        db_buf_.clear(); db_buf_.shrink_to_fit();
+        dW_raw = pw; db_raw = pb; pmad_owned_ = true;
+        // Rewire the Maps to point at the new PMAD storage.
+        new (&dW) Eigen::Map<Eigen::MatrixXf>(dW_raw, out_feat_, in_feat_);
+        new (&db) Eigen::Map<Eigen::VectorXf>(db_raw, out_feat_);
+    }
 
     Eigen::MatrixXf forward(const Eigen::MatrixXf& x) override {
         in_ = x;

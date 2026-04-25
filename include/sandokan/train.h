@@ -132,8 +132,14 @@ inline void train_batched(Network& net,
 }
 
 // ---- Module-based API ----
+// Dataset concept — any type providing:
+//   int  cols()                                        — number of samples
+//   int  image_size()                                  — input feature dimension
+//   void get_image_col(int idx, VectorXf& out) const  — fill normalized features
+//   int  label(int idx) const                          — integer class (classification)
 
-inline double compute_accuracy(Module& net, const ImageDataset& ds,
+template<typename Dataset>
+inline double compute_accuracy(Module& net, const Dataset& ds,
                                int batch_size = 256) {
     int correct = 0, n = ds.cols();
     Eigen::MatrixXf X(ds.image_size(), batch_size);
@@ -160,10 +166,10 @@ inline double compute_accuracy(Module& net, const ImageDataset& ds,
     return 100.0 * correct / n;
 }
 
-template<typename Optim>
+template<typename Optim, typename Dataset>
 inline void train_module(Module& net, Optim& optim,
-                         const ImageDataset& train_set,
-                         const ImageDataset& test_set,
+                         const Dataset& train_set,
+                         const Dataset& test_set,
                          int epochs     = 150,
                          int batch_size = 128) {
     const int n = train_set.cols();
@@ -214,7 +220,7 @@ inline void train_module(Module& net, Optim& optim,
     }
 }
 
-// Backward-compatible overload — defaults to SGD.
+// Backward-compatible overload — defaults to SGD, ImageDataset.
 inline void train_module(Module& net,
                          const ImageDataset& train_set,
                          const ImageDataset& test_set,
@@ -223,4 +229,91 @@ inline void train_module(Module& net,
                          float lr         = 0.01f) {
     SGD optim(lr);
     train_module(net, optim, train_set, test_set, epochs, batch_size);
+}
+
+// ---- Regression API ----
+// Dataset must additionally provide:
+//   float normalized_target(int idx)     — target scaled to zero mean / unit var
+//   float denormalize_target(float y)    — convert prediction back to original units
+
+template<typename Dataset>
+inline double compute_rmse(Module& net, const Dataset& ds, int batch_size = 256) {
+    double sse = 0.0;
+    const int n = ds.cols();
+    Eigen::MatrixXf X(ds.image_size(), batch_size);
+    for (int s = 0; s < n; s += batch_size) {
+        const int e = std::min(s + batch_size, n), bs = e - s;
+        if (bs == batch_size) {
+            for (int i = 0; i < bs; ++i) ds.get_image_col(s + i, X.col(i));
+            Eigen::MatrixXf out = net.forward(X);
+            for (int j = 0; j < bs; ++j) {
+                float err = ds.denormalize_target(out(0, j)) - ds.target(s + j);
+                sse += double(err) * err;
+            }
+        } else {
+            Eigen::MatrixXf x(ds.image_size(), 1);
+            for (int i = s; i < e; ++i) {
+                ds.get_image_col(i, x.col(0));
+                float pred = ds.denormalize_target(net.forward(x)(0, 0));
+                float err  = pred - ds.target(i);
+                sse += double(err) * err;
+            }
+        }
+    }
+    return std::sqrt(sse / n);
+}
+
+template<typename Optim, typename Dataset>
+inline void train_regression(Module& net, Optim& optim,
+                             const Dataset& train_set,
+                             const Dataset& test_set,
+                             int epochs     = 100,
+                             int batch_size = 64) {
+    const int n = train_set.cols();
+    MSELoss criterion;
+
+    std::vector<int> indices(n);
+    std::iota(indices.begin(), indices.end(), 0);
+    std::mt19937 rng(42);
+
+    Eigen::MatrixXf X(train_set.image_size(), batch_size);
+    Eigen::MatrixXf Y(1, batch_size);
+
+    std::printf("Training (regression · MSE): epochs=%d  batch=%d\n\n",
+                epochs, batch_size);
+    std::printf("%-10s %-14s %-14s %-14s\n",
+                "Epoch", "Loss (norm)", "Train RMSE", "Test RMSE");
+    std::printf("%s\n", std::string(56, '-').c_str());
+
+    for (int epoch = 1; epoch <= epochs; ++epoch) {
+        std::shuffle(indices.begin(), indices.end(), rng);
+        double total_loss = 0.0;
+        int n_full = 0;
+
+        for (int s = 0; s < n; s += batch_size) {
+            const int e = std::min(s + batch_size, n), bs = e - s;
+            if (bs != batch_size) continue;
+
+            for (int i = 0; i < bs; ++i) {
+                train_set.get_image_col(indices[s + i], X.col(i));
+                Y(0, i) = train_set.normalized_target(indices[s + i]);
+            }
+
+            optim.zero_grad(net);
+            Eigen::MatrixXf out = net.forward(X);
+            auto [batch_loss, delta] = criterion(out, Y);
+            net.backward(delta);
+            optim.step(net);
+            total_loss += double(batch_loss) * bs;
+            ++n_full;
+        }
+
+        double avg_loss  = total_loss / (n_full * batch_size);
+        double train_rmse = compute_rmse(net, train_set, batch_size);
+        double test_rmse  = compute_rmse(net, test_set,  batch_size);
+        std::printf("%-10d %-14.6f %-14.4f %-14.4f\n",
+                    epoch, avg_loss, train_rmse, test_rmse);
+        std::fflush(stdout);
+        optim.epoch_end();
+    }
 }
