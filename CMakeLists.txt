@@ -23,7 +23,10 @@ add_library(pmad STATIC
     ${PMAD_DIR}/src/MemoryPool.c
     ${PMAD_DIR}/src/incPmad.c
 )
-target_include_directories(pmad PUBLIC ${PMAD_DIR}/include)
+target_include_directories(pmad PUBLIC
+    $<BUILD_INTERFACE:${PMAD_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/pmad>
+)
 
 # ---------- sandokan — header-only INTERFACE target ----------
 #
@@ -34,8 +37,10 @@ target_include_directories(pmad PUBLIC ${PMAD_DIR}/include)
 
 add_library(sandokan INTERFACE)
 target_include_directories(sandokan INTERFACE
-    ${CMAKE_SOURCE_DIR}/include
-    ${PMAD_DIR}/include
+    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${PMAD_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/pmad>
 )
 target_link_libraries(sandokan INTERFACE
     Eigen3::Eigen
