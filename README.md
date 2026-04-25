@@ -8,7 +8,7 @@
 
 <br />
 <div align="center">
-  <a href="https://github.com/your_username/Sandokan">
+  <a href="https://github.com/Molikano/Sandokan">
     <img src="logo.png" alt="Sandokan Logo" width="120" height="120">
   </a>
 
@@ -400,16 +400,16 @@ Distributed under the MIT License. See `LICENSE` for more information.
 ---
 
 <!-- MARKDOWN LINKS & IMAGES -->
-[contributors-shield]: https://img.shields.io/github/contributors/your_username/Sandokan.svg?style=for-the-badge
-[contributors-url]: https://github.com/your_username/Sandokan/graphs/contributors
-[forks-shield]: https://img.shields.io/github/forks/your_username/Sandokan.svg?style=for-the-badge
-[forks-url]: https://github.com/your_username/Sandokan/network/members
-[stars-shield]: https://img.shields.io/github/stars/your_username/Sandokan.svg?style=for-the-badge
-[stars-url]: https://github.com/your_username/Sandokan/stargazers
-[issues-shield]: https://img.shields.io/github/issues/your_username/Sandokan.svg?style=for-the-badge
-[issues-url]: https://github.com/your_username/Sandokan/issues
-[license-shield]: https://img.shields.io/github/license/your_username/Sandokan.svg?style=for-the-badge
-[license-url]: https://github.com/your_username/Sandokan/blob/main/LICENSE
+[contributors-shield]: https://img.shields.io/github/contributors/Molikano/Sandokan.svg?style=for-the-badge
+[contributors-url]: https://github.com/Molikano/Sandokan/graphs/contributors
+[forks-shield]: https://img.shields.io/github/forks/Molikano/Sandokan.svg?style=for-the-badge
+[forks-url]: https://github.com/Molikano/Sandokan/network/members
+[stars-shield]: https://img.shields.io/github/stars/Molikano/Sandokan.svg?style=for-the-badge
+[stars-url]: https://github.com/Molikano/Sandokan/stargazers
+[issues-shield]: https://img.shields.io/github/issues/Molikano/Sandokan.svg?style=for-the-badge
+[issues-url]: https://github.com/Molikano/Sandokan/issues
+[license-shield]: https://img.shields.io/github/license/Molikano/Sandokan.svg?style=for-the-badge
+[license-url]: https://github.com/Molikano/Sandokan/blob/main/LICENSE
 [cpp-shield]: https://img.shields.io/badge/C%2B%2B17-00599C?style=for-the-badge&logo=cplusplus&logoColor=white
 [cpp-url]: https://en.cppreference.com/w/cpp/17
 [eigen-shield]: https://img.shields.io/badge/Eigen-3.4-brightgreen?style=for-the-badge
