@@ -7,7 +7,7 @@
 
 void build_lookup_table(PMAD* pmad) {
     uint8_t class_index = 0;
-    for (uint16_t i = 1; i <= MAX_SIZE_OF_SIZE_CLASS / ALIGNMENT; i++) {
+    for (size_t i = 1; i <= MAX_SIZE_OF_SIZE_CLASS / ALIGNMENT; i++) {
         size_t aligned_size = (size_t)i * ALIGNMENT;
 
         while (class_index < pmad->num_size_classes &&

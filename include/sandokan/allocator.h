@@ -1,51 +1,104 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdio>
+#include <map>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 extern "C" {
 #include "plad_bridge.h"
 #include "incPMAD.h"
 }
 
-// ---------- Lifecycle ----------
+// Computes PMAD size classes from the network architecture and batch size,
+// then initialises the pool.
 //
-// 8 PMAD size classes — Layer gradients + BatchWorkspace, all float.
-// Sorted ascending; percentages sum to 100. Pool = 3 MB.
+// For each layer i in [0, L):
+//   dW    : sizes[i+1] * sizes[i]    * sizeof(float)  — 1 block
+//   db    : sizes[i+1]               * sizeof(float)  — 1 block
+//   Z,A,D : sizes[i+1] * batch_size  * sizeof(float)  — 3 blocks each
+// Plus:
+//   X0,X1 : sizes[0]   * batch_size  * sizeof(float)  — 2 blocks
 //
-//   Class 0:     104 B — output.db              (26×4)        ×  1  →  1%
-//   Class 1:     256 B — hidden.db              (64×4)        ×  2  →  1%
-//   Class 2:   6,656 B — output.dW              (26×64×4)     ×  1  →  1%
-//   Class 3:  13,312 B — workspace Z3,A3,D3     (26×128×4)    ×  3  →  3%
-//   Class 4:  16,384 B — hidden2.dW             (64×64×4)     ×  1  →  1%
-//   Class 5:  32,768 B — workspace Z1,A1,Z2,A2,D1,D2 (64×128×4) × 6 → 8%
-//   Class 6: 200,704 B — hidden1.dW             (64×784×4)    ×  1  → 10%
-//   Class 7: 401,408 B — workspace X0,X1        (784×128×4)   ×  2  → 75%
-//
-// 17 allocations total: 6 Layer + 11 BatchWorkspace.
-// BlockHeader overhead = 16 B; slots per class verified against 3 MB pool.
+// Blocks of identical byte size are merged into one class.
+// Percentages are derived proportionally (largest-remainder, min 1%).
+// Pool = max(2 × total bytes, 512 KB).
 
-inline void init_network_pmad() {
-    static const size_t class_sizes[8] = { 104, 256, 6656, 13312, 16384, 32768, 200704, 401408 };
-    static const size_t percentages[8] = {   1,   1,    1,     3,     1,     8,     10,     75 };
-    static const size_t pool_size      = 3 * 1024 * 1024;  // 3 MB
+inline void init_pmad(const std::vector<int>& sizes, int batch_size) {
+    const int L = (int)sizes.size() - 1;
 
-    PmadStatus st = pmad_init(class_sizes, 8, percentages, pool_size);
+    std::map<size_t, size_t> bufs;  // bytes → count
+    for (int i = 0; i < L; ++i) {
+        bufs[size_t(sizes[i+1]) * sizes[i]    * sizeof(float)]++;
+        bufs[size_t(sizes[i+1])               * sizeof(float)]++;
+        bufs[size_t(sizes[i+1]) * batch_size  * sizeof(float)] += 3;
+    }
+    bufs[size_t(sizes[0]) * batch_size * sizeof(float)] += 2;
+
+    const int n = (int)bufs.size();
+    std::vector<size_t> class_sizes, counts;
+    for (auto& [sz, cnt] : bufs) { class_sizes.push_back(sz); counts.push_back(cnt); }
+
+    size_t total = 0;
+    for (int i = 0; i < n; ++i) total += class_sizes[i] * counts[i];
+
+    // Each class needs at least 1% so it gets at least one slot in the pool.
+    // Reserve 1% per class, then distribute the rest (100 - n) proportionally
+    // via the largest-remainder (Hamilton) method — guarantees sum = 100.
+    if (n > 100)
+        throw std::runtime_error("Too many PMAD size classes (> 100)");
+
+    const size_t to_dist = size_t(100 - n);
+    std::vector<double> raw(n);
+    for (int i = 0; i < n; ++i)
+        raw[i] = double(to_dist) * double(class_sizes[i] * counts[i]) / double(total);
+
+    std::vector<size_t> extra(n);
+    size_t extra_sum = 0;
+    for (int i = 0; i < n; ++i) { extra[i] = size_t(raw[i]); extra_sum += extra[i]; }
+
+    size_t remainder = to_dist - extra_sum;
+    while (remainder > 0) {
+        int best = 0;
+        double best_frac = raw[0] - double(extra[0]);
+        for (int i = 1; i < n; ++i) {
+            double frac = raw[i] - double(extra[i]);
+            if (frac > best_frac) { best_frac = frac; best = i; }
+        }
+        extra[best]++; remainder--;
+    }
+
+    std::vector<size_t> pcts(n);
+    for (int i = 0; i < n; ++i) pcts[i] = 1 + extra[i];
+
+    const size_t max_class = class_sizes.back();  // sorted ascending
+    if (max_class > MAX_SIZE_OF_SIZE_CLASS)
+        throw std::runtime_error(
+            "Largest buffer (" + std::to_string(max_class) +
+            " B) exceeds PMAD MAX_SIZE_OF_SIZE_CLASS (" +
+            std::to_string(MAX_SIZE_OF_SIZE_CLASS) +
+            " B). Increase the constant in pmad/include/PMAD.h and rebuild.");
+
+    const size_t pool = std::max(total * 2, size_t(512 * 1024));
+
+    PmadStatus st = pmad_init(class_sizes.data(), n, pcts.data(), pool);
     if (st != PMAD_OK)
         throw std::runtime_error("pmad_init failed: " + std::to_string(st));
 
-    std::printf("PMAD initialised  pool=3MB  8 classes "
-                "[104B 256B 6656B 13312B 16384B 32768B 200704B 401408B]\n\n");
+    std::printf("PMAD initialised  pool=%zuKB  %d classes\n", pool / 1024, n);
+    for (int i = 0; i < n; ++i)
+        std::printf("  class[%d]  %7zuB  count=%zu  pct=%zu%%\n",
+                    i, class_sizes[i], counts[i], pcts[i]);
+    std::printf("\n");
 }
 
-inline void destroy_network_pmad() { pmad_destroy(); }
-
-// ---------- Live stats ----------
+inline void destroy_pmad() { pmad_destroy(); }
 
 inline void print_pmad_stats() {
-    PmadClassStats stats[8];
-    int n = pmad_get_stats(stats, 8);
+    PmadClassStats stats[16];
+    int n = pmad_get_stats(stats, 16);
     std::printf("PMAD live stats:\n");
     for (int i = 0; i < n; ++i)
         std::printf("  class[%d]  block=%6u B  total=%3u  allocated=%u\n",

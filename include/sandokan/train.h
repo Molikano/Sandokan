@@ -1,6 +1,7 @@
 #pragma once
 
 #include "dataset.h"
+#include "loss.h"
 #include "network.h"
 #include <algorithm>
 #include <cmath>
@@ -30,17 +31,15 @@ inline void train_batched(Network& net,
                           int   batch_size = 128,
                           float lr         = 0.01f) {
     const int n = train_set.cols();
+    const int L = net.num_layers();
+    CrossEntropyLoss criterion;
 
     std::vector<int> indices(n);
     std::iota(indices.begin(), indices.end(), 0);
     std::mt19937 rng(42);
 
-    // Pre-allocate all workspace buffers (X double-buffered, Z/A/D fixed)
-    BatchWorkspace ws(Network::INPUT_SIZE, Network::HIDDEN1, Network::HIDDEN2,
-                      Network::OUTPUT_SIZE, batch_size);
+    BatchWorkspace ws(net.sizes, batch_size);
 
-    // Gathers batch [start, start+bs) into ws.Xbuf(buf_idx) and returns labels.
-    // Called on a background thread while the previous batch is computing.
     auto assemble = [&](int buf_idx, int start, int bs) -> std::vector<int> {
         auto& Xb = ws.Xbuf(buf_idx);
         std::vector<int> lbls(bs);
@@ -61,7 +60,6 @@ inline void train_batched(Network& net,
         std::shuffle(indices.begin(), indices.end(), rng);
         double total_loss = 0.0;
 
-        // comp=0 holds the batch ready to compute; fill=1 is assembled next.
         int fill = 1, comp = 0;
         std::vector<int> curr_labels = assemble(comp, 0, std::min(batch_size, n));
 
@@ -71,7 +69,6 @@ inline void train_batched(Network& net,
             const int next_start = end;
             const bool has_next  = (next_start + batch_size <= n);
 
-            // Kick off assembly of the next full batch on a background thread
             std::future<std::vector<int>> fut;
             if (has_next)
                 fut = std::async(std::launch::async,
@@ -80,10 +77,10 @@ inline void train_batched(Network& net,
             if (bs == batch_size) {
                 net.zero_grad();
                 net.forward_batch(ws.Xbuf(comp), ws);
-                net.backward_batch(ws.Xbuf(comp), ws, curr_labels, bs);
+                auto [batch_loss, delta] = criterion(ws.A(L-1), curr_labels);
+                net.backward_batch(ws.Xbuf(comp), ws, delta);
                 net.update(lr);
-                for (int j = 0; j < bs; ++j)
-                    total_loss -= std::log(ws.A3(curr_labels[j], j) + 1e-7f);
+                total_loss += double(batch_loss) * bs;
             } else {
                 // Partial last batch: per-sample fallback
                 net.zero_grad();
@@ -92,15 +89,15 @@ inline void train_batched(Network& net,
                     const int idx   = indices[i];
                     const int label = train_set.label(idx);
                     train_set.get_image_col(idx, x);
-                    auto probs = net.forward(x);
-                    total_loss -= std::log(probs(label) + 1e-7f);
-                    net.backward(x, label);
+                    auto a = net.forward(x);
+                    auto [sample_loss, delta] = criterion(a, label);
+                    total_loss += sample_loss;
+                    net.backward(x, delta);
                 }
-                for (Layer* l : net.layers) { l->dW /= bs; l->db /= bs; }
+                net.scale_grad(1.0f / bs);
                 net.update(lr);
             }
 
-            // Overlap resolved: swap buffers and grab assembled labels
             if (has_next) {
                 curr_labels = fut.get();
                 std::swap(fill, comp);

@@ -10,6 +10,7 @@
 
 #include <sandokan/allocator.h>
 #include <sandokan/dataset.h>
+#include <sandokan/loss.h>
 #include <sandokan/network.h>
 
 // ============================================================
@@ -32,6 +33,7 @@ struct LayerEigen {
                 W(r, c) = dist(rng);
     }
     void zero_grad() { dW.setZero(); db.setZero(); }
+    void scale_grad(float s) { dW *= s; db *= s; }
 };
 
 struct NetworkEigen {
@@ -53,8 +55,9 @@ struct NetworkEigen {
         return softmax(output.z);
     }
 
-    void backward(const Eigen::Ref<const Eigen::VectorXf>& x, int label) {
-        output.delta = softmax(output.z); output.delta(label) -= 1.0f;
+    void backward(const Eigen::Ref<const Eigen::VectorXf>& x,
+                  const Eigen::Ref<const Eigen::VectorXf>& output_delta) {
+        output.delta = output_delta;
         hidden2.delta = (output.W.transpose() * output.delta).cwiseProduct(relu_prime(hidden2.z));
         hidden1.delta = (hidden2.W.transpose() * hidden2.delta).cwiseProduct(relu_prime(hidden1.z));
         output.dW  += output.delta  * hidden2.a.transpose(); output.db  += output.delta;
@@ -65,9 +68,9 @@ struct NetworkEigen {
     void update(float lr) {
         for (auto* l : layers) { l->W -= lr * l->dW; l->b -= lr * l->db; }
     }
-    void zero_grad() { for (auto* l : layers) l->zero_grad(); }
+    void zero_grad()       { for (auto* l : layers) l->zero_grad(); }
+    void scale_grad(float s) { for (auto* l : layers) l->scale_grad(s); }
 
-    // Batched — BatchCache allocated by Eigen per call
     BatchCache forward_batch(const Eigen::Ref<const Eigen::MatrixXf>& X) {
         BatchCache c;
         c.Z1 = (hidden1.W * X).colwise()    + hidden1.b; c.A1 = c.Z1.cwiseMax(0.0f);
@@ -100,11 +103,9 @@ struct BenchResult {
     double total_ms, ms_per_epoch, ms_per_sample, samples_per_sec;
 };
 
-// Single-sample: BLAS L2 (matrix × vector) per sample
-template<typename Net, typename LayerPtr>
-BenchResult run_bench_single(Net& net, std::vector<LayerPtr*>& layers,
-                             const ImageDataset& data,
-                             int epochs, int batch_size, double lr) {
+template<typename Net>
+BenchResult run_bench_single(Net& net, const ImageDataset& data,
+                             int epochs, int batch_size, float lr) {
     using Clock = std::chrono::high_resolution_clock;
     using Ms    = std::chrono::duration<double, std::milli>;
 
@@ -112,6 +113,7 @@ BenchResult run_bench_single(Net& net, std::vector<LayerPtr*>& layers,
     std::vector<int> idx(n); std::iota(idx.begin(), idx.end(), 0);
     std::mt19937 rng(42);
 
+    CrossEntropyLoss criterion;
     Eigen::VectorXf x(data.image_size());
     auto run_epoch = [&]() {
         std::shuffle(idx.begin(), idx.end(), rng);
@@ -120,11 +122,12 @@ BenchResult run_bench_single(Net& net, std::vector<LayerPtr*>& layers,
             net.zero_grad();
             for (int i = s; i < e; ++i) {
                 data.get_image_col(idx[i], x);
-                net.forward(x);
-                net.backward(x, data.label(idx[i]));
+                auto a = net.forward(x);
+                auto [_, delta] = criterion(a, data.label(idx[i]));
+                net.backward(x, delta);
             }
-            for (auto* l : layers) { l->dW /= bs; l->db /= bs; }
-            net.update(static_cast<float>(lr));
+            net.scale_grad(1.0f / bs);
+            net.update(lr);
         }
     };
 
@@ -136,7 +139,6 @@ BenchResult run_bench_single(Net& net, std::vector<LayerPtr*>& layers,
     return { ms, ms/epochs, ms/total, total/(ms/1000.0) };
 }
 
-// Eigen batched: GEMM, BatchCache heap-allocated by Eigen per batch
 BenchResult run_bench_eigen_batched(NetworkEigen& net, const ImageDataset& data,
                                     int epochs, int batch_size, float lr) {
     using Clock = std::chrono::high_resolution_clock;
@@ -170,7 +172,6 @@ BenchResult run_bench_eigen_batched(NetworkEigen& net, const ImageDataset& data,
     return { ms, ms/epochs, ms/total, total/(ms/1000.0) };
 }
 
-// PMAD batched+workspace: GEMM + pre-allocated PMAD Maps + parallel assembly
 BenchResult run_bench_pmad_batched(Network& net, const ImageDataset& data,
                                    int epochs, int batch_size, float lr) {
     using Clock = std::chrono::high_resolution_clock;
@@ -180,8 +181,8 @@ BenchResult run_bench_pmad_batched(Network& net, const ImageDataset& data,
     std::vector<int> idx(n); std::iota(idx.begin(), idx.end(), 0);
     std::mt19937 rng(42);
 
-    BatchWorkspace ws(Network::INPUT_SIZE, Network::HIDDEN1, Network::HIDDEN2,
-                      Network::OUTPUT_SIZE, batch_size);
+    const int L = net.num_layers();
+    BatchWorkspace ws(net.sizes, batch_size);
 
     auto assemble = [&](int buf, int start, int bs) -> std::vector<int> {
         auto& Xb = ws.Xbuf(buf); std::vector<int> lbls(bs);
@@ -207,7 +208,8 @@ BenchResult run_bench_pmad_batched(Network& net, const ImageDataset& data,
             if (bs == batch_size) {
                 net.zero_grad();
                 net.forward_batch(ws.Xbuf(comp), ws);
-                net.backward_batch(ws.Xbuf(comp), ws, curr, bs);
+                auto [_, delta] = CrossEntropyLoss{}(ws.A(L-1), curr);
+                net.backward_batch(ws.Xbuf(comp), ws, delta);
                 net.update(lr);
             }
             if (has_next) { curr = fut.get(); std::swap(fill, comp); }
@@ -227,10 +229,11 @@ BenchResult run_bench_pmad_batched(Network& net, const ImageDataset& data,
 // ============================================================
 
 int main() {
-    const std::string data_dir     = "data/Emnist Letters";
-    const int         bench_epochs = 5;
-    const int         batch_size   = 128;
-    const float       lr           = 0.01f;
+    const std::string      data_dir     = "data/Emnist Letters";
+    const std::vector<int> arch         = { 784, 64, 64, 26 };
+    const int              bench_epochs = 5;
+    const int              batch_size   = 128;
+    const float            lr           = 0.01f;
 
     std::printf("Loading dataset...\n");
     ImageDataset data = load_emnist_letters(data_dir, true);
@@ -242,20 +245,20 @@ int main() {
     std::printf("(1 warm-up epoch excluded from timing)\n\n");
 
     // ---- PMAD single-sample ----
-    init_network_pmad();
+    init_pmad(arch, batch_size);
     BenchResult pmad_single;
-    { Network net; pmad_single = run_bench_single(net, net.layers, data, bench_epochs, batch_size, lr); }
-    destroy_network_pmad();
+    { Network net(arch); pmad_single = run_bench_single(net, data, bench_epochs, batch_size, lr); }
+    destroy_pmad();
 
     // ---- Eigen single-sample ----
     BenchResult eigen_single;
-    { NetworkEigen net; eigen_single = run_bench_single(net, net.layers, data, bench_epochs, batch_size, lr); }
+    { NetworkEigen net; eigen_single = run_bench_single(net, data, bench_epochs, batch_size, lr); }
 
     // ---- PMAD batched+workspace+parallel ----
-    init_network_pmad();
+    init_pmad(arch, batch_size);
     BenchResult pmad_batched;
-    { Network net; pmad_batched = run_bench_pmad_batched(net, data, bench_epochs, batch_size, lr); }
-    destroy_network_pmad();
+    { Network net(arch); pmad_batched = run_bench_pmad_batched(net, data, bench_epochs, batch_size, lr); }
+    destroy_pmad();
 
     // ---- Eigen batched ----
     BenchResult eigen_batched;

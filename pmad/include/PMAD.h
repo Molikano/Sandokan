@@ -6,7 +6,7 @@
 #include <stdint.h>
 
 #define ALIGNMENT 16
-#define MAX_SIZE_OF_SIZE_CLASS 401408 /* 25088 slots; covers hidden1.dW (64x784x8 B) */
+#define MAX_SIZE_OF_SIZE_CLASS (4 * 1024 * 1024) /* lookup table covers up to 4 MB per buffer */
 
 typedef enum {
   PMAD_OK = 0,

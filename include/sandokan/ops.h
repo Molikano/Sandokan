@@ -11,6 +11,9 @@ inline Eigen::VectorXf relu(const Eigen::VectorXf& z) {
 inline Eigen::VectorXf relu_prime(const Eigen::VectorXf& z) {
     return (z.array() > 0.0f).cast<float>();
 }
+inline Eigen::VectorXf sigmoid(const Eigen::VectorXf& z) {
+    return (1.0f / (1.0f + (-z.array()).exp())).matrix();
+}
 inline Eigen::VectorXf softmax(const Eigen::VectorXf& z) {
     Eigen::VectorXf e = (z.array() - z.maxCoeff()).exp();
     return e / e.sum();

@@ -5,11 +5,11 @@
 #include <sandokan/train.h>
 
 int main() {
-    const std::string data_dir = "data/Emnist Letters";
+    const std::string      data_dir   = "data/Emnist Letters";
+    const std::vector<int> arch       = { 784, 256, 512, 256, 26 };
+    const int              batch_size = 128;
 
     std::printf("Loading datasets...\n");
-    // Visualize first sample BEFORE normalization (shades expect 0–255 range),
-    // so the train_set is loaded raw and normalization is computed after.
     ImageDataset train_set = load_emnist_letters(data_dir, true,  false);
     ImageDataset test_set  = load_emnist_letters(data_dir, false);
     std::printf("  train: %d images (%.0f MB raw, mmap-resident)\n",
@@ -25,13 +25,13 @@ int main() {
 
     train_set.compute_normalization();
 
-    init_network_pmad();
+    init_pmad(arch, batch_size);
     {
-        Network net;
+        Network net(arch);
         print_pmad_plan(net);
         print_pmad_stats();
         train_batched(net, train_set, test_set);
     }
-    destroy_network_pmad();
+    destroy_pmad();
     return 0;
 }
