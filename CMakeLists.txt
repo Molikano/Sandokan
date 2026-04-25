@@ -4,6 +4,8 @@ project(Sandokan VERSION 0.1.0 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_C_STANDARD   11)
 
+include(GNUInstallDirs)
+
 find_package(Eigen3 REQUIRED)
 find_library(ACCELERATE_FRAMEWORK Accelerate REQUIRED)
 
@@ -54,8 +56,6 @@ if(SANDOKAN_BUILD_EXAMPLES)
 endif()
 
 # ---------- Installation (Make it universal) ----------
-
-include(GNUInstallDirs)
 
 # 1. Install the targets (compiled pmad static library and sandokan interface)
 install(TARGETS sandokan pmad
