@@ -17,7 +17,7 @@
   <p align="center">
     <em>Train with reasoning, optimize with precision.</em>
     <br />
-    A from-scratch C++ neural network training engine — no Python, no PyTorch.
+    A CPU-first C++ neural network training engine built for on-device learning — no Python, no PyTorch, no GPU required.
     <br /><br />
     <a href="#core-features"><strong>Explore the docs »</strong></a>
     &nbsp;&middot;&nbsp;
@@ -61,15 +61,22 @@
 
 ## About
 
-Training neural networks in C++ today means dragging in LibTorch (a ~1 GB dependency with a Python runtime assumption) or writing raw BLAS calls with no abstraction. Sandokan fills the gap: a PyTorch-style API at native C++ speed, designed for environments where Python is not an option.
+Most neural network training assumes a GPU and a Python runtime. That assumption breaks in the places where learning matters most: a microcontroller updating a sensor model in the field, a robot adapting its controller between tasks, an embedded vision system that must improve on the device it runs on. Sandokan is built for those environments.
 
-**Drop a single header into any C++ project** and get a complete training pipeline — classification, regression, custom datasets, optimizers, learning rate schedules, and model persistence — backed by a custom slab allocator and Apple AMX acceleration.
+**Sandokan is a CPU-only, on-device training engine.** There is no CUDA dependency, no Python interpreter, no ~1 GB LibTorch runtime to drag in. The target is small-scale models — fully connected networks in the tens-of-thousands to low-millions of parameter range — trained directly on the hardware where they will be used.
+
+**Drop a single header into any C++ project** and get a complete training pipeline: classification, regression, custom datasets, optimizers, learning rate schedules, and model persistence. The engine is backed by a custom slab allocator (PMAD) and Apple AMX acceleration via Eigen, so CPU training is as fast as the hardware allows.
+
+**Why CPU-only and small-scale?**
+
+The trend toward giant GPU-trained models obscures a different class of problem: systems that must *keep learning* after deployment, with local data, on hardware that has no network connection or power budget for a GPU. Sandokan's design constraints are deliberate — tight memory control via PMAD, mmap-backed datasets with bounded RSS, and a header-only footprint make it practical to embed a full training loop into firmware, a game engine, or a latency-critical trading system.
 
 **Built for:**
-- Embedded systems and edge devices with tight memory budgets
-- Game engines and real-time systems requiring sub-millisecond inference
-- Trading systems and other latency-sensitive C++ codebases
-- Any environment where on-device learning must happen without a Python runtime
+- Embedded systems and edge devices that need on-device model adaptation
+- Robotics and control systems that update parameters between episodes
+- Game engines doing real-time AI personalization without a cloud round-trip
+- Trading systems and other latency-sensitive C++ codebases with on-device inference and retraining
+- Any environment where GPU access is unavailable and Python is not an option
 
 ### Built With
 
