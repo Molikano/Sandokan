@@ -224,3 +224,44 @@ inline ImageDataset load_emnist_letters(const std::string& data_dir, bool train,
     if (do_normalize) ds.compute_normalization();
     return ds;
 }
+
+inline ImageDataset load_fashion_mnist(const std::string& data_dir, bool train,
+                                       bool do_normalize = true) {
+    const std::string img_path = data_dir + (train ? "/train-images-idx3-ubyte"
+                                                    : "/t10k-images-idx3-ubyte");
+    const std::string lbl_path = data_dir + (train ? "/train-labels-idx1-ubyte"
+                                                    : "/t10k-labels-idx1-ubyte");
+    ImageDataset ds;
+    ds.img_file.open(img_path);
+    ds.lbl_file.open(lbl_path);
+
+    if (ds.img_file.size() < 16 ||
+        detail::be_u32(ds.img_file.data()) != 0x00000803u)
+        throw std::runtime_error("Bad IDX image magic / size: " + img_path);
+    if (ds.lbl_file.size() < 8 ||
+        detail::be_u32(ds.lbl_file.data()) != 0x00000801u)
+        throw std::runtime_error("Bad IDX label magic / size: " + lbl_path);
+
+    const uint32_t img_n = detail::be_u32(ds.img_file.data() + 4);
+    const uint32_t rows  = detail::be_u32(ds.img_file.data() + 8);
+    const uint32_t cols  = detail::be_u32(ds.img_file.data() + 12);
+    const uint32_t lbl_n = detail::be_u32(ds.lbl_file.data() + 4);
+
+    if (img_n != lbl_n) throw std::runtime_error("Image/label count mismatch");
+    if (size_t(16) + size_t(img_n) * rows * cols != ds.img_file.size())
+        throw std::runtime_error("IDX image file size mismatch");
+    if (size_t(8) + size_t(lbl_n) != ds.lbl_file.size())
+        throw std::runtime_error("IDX label file size mismatch");
+
+    ds.pixels           = ds.img_file.data() + 16;
+    ds.lbls             = ds.lbl_file.data() + 8;
+    ds.n                = int(img_n);
+    ds.rows             = int(rows);
+    ds.cols_            = int(cols);
+    ds.pixels_per_image = int(rows * cols);
+    ds.label_offset     = 0;
+    ds.fix_orientation  = false;
+
+    if (do_normalize) ds.compute_normalization();
+    return ds;
+}

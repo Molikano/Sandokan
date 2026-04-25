@@ -1,0 +1,2 @@
+add_executable(fashion_mnist_bench main.cpp)
+target_link_libraries(fashion_mnist_bench sandokan)

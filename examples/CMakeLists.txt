@@ -1,4 +1,5 @@
 add_subdirectory(emnist_letters)
 add_subdirectory(benchmark)
 add_subdirectory(tabular_demo)
-add_subdirectory(air_quality)
+add_subdirectory(emnist_bench)
+add_subdirectory(fashion_mnist_bench)

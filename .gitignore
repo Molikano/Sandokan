@@ -67,3 +67,11 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# Python
+*.py
+__pycache__/
+*.pyc
+
+# Datasets
+data/Fashion MNIST/
