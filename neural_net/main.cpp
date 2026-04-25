@@ -1,4 +1,4 @@
-#include <iostream>
+#include <cstdio>
 #include "dataloader.h"
 #include "network.h"
 #include "pmad.h"
@@ -7,28 +7,25 @@
 int main() {
     const std::string data_dir = "data/Emnist Letters";
 
-    std::cout << "Loading datasets...\n";
-    ImageDataset train_set = load_emnist_letters(data_dir, /*train=*/true,  /*do_normalize=*/false);
-    ImageDataset test_set  = load_emnist_letters(data_dir, /*train=*/false);
-    std::printf("  train: %zu images\n", train_set.images.size());
-    std::printf("  test : %zu images\n\n", test_set.images.size());
+    std::printf("Loading datasets...\n");
+    ImageDataset train_set = load_emnist_letters(data_dir, true,  false);
+    ImageDataset test_set  = load_emnist_letters(data_dir, false);
+    std::printf("  train: %d images (%.0f MB)\n",
+                train_set.cols(), train_set.images.size() * sizeof(float) / 1048576.0);
+    std::printf("  test : %d images\n\n", test_set.cols());
 
-    visualize(train_set.images[0], train_set.labels[0], 'A' + train_set.labels[0]);
-    std::cout << "\n";
+    visualize(train_set.images.col(0), train_set.labels[0],
+              static_cast<char>('A' + train_set.labels[0]));
+    std::printf("\n");
     normalize(train_set.images);
 
-    // PMAD must be initialised before Network — Layer constructors alloc from it
     init_network_pmad();
-
     {
         Network net;
-
         print_pmad_plan(net);
         print_pmad_stats();
-
         train_batched(net, train_set, test_set);
-    }  // ~Network: Layer destructors return all 12 vectors to PMAD free lists
-
+    }
     destroy_network_pmad();
     return 0;
 }
