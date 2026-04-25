@@ -11,7 +11,6 @@ struct ImageDataset {
     std::vector<int>             labels;
 };
 
-// IDX files store multi-byte integers in big-endian order
 static uint32_t read_be_uint32(std::ifstream& f) {
     uint8_t bytes[4];
     f.read(reinterpret_cast<char*>(bytes), 4);
@@ -62,7 +61,6 @@ static std::vector<int> load_labels(const std::string& path, int label_offset = 
     return labels;
 }
 
-// Computes per-pixel mean and std across all images, then normalises in-place
 static void normalize(std::vector<Eigen::VectorXd>& images) {
     int n      = static_cast<int>(images.size());
     int pixels = static_cast<int>(images[0].size());
